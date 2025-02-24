@@ -26,7 +26,7 @@ pacman_rl_project/
 ## Installation
 1. Clone the repository:
    ```bash
-   git clone https://github.com/your-repo/pacman_rl_project.git
+   git clone https://github.com/LudovicNc/pacman_rl
    cd pacman_rl_project
    ```
 2. Install dependencies:

@@ -1,0 +1,70 @@
+import numpy as np
+import random
+import gymnasium as gym
+import pickle
+
+class QLearningAgent:
+    """
+    Q-Learning Agent for Pac-Man RL Environment
+    """
+    def __init__(self, state_size, action_size, learning_rate=0.1, discount_factor=0.99, exploration_rate=1.0, min_exploration=0.01, decay_rate=0.995):
+        self.state_size = state_size
+        self.action_size = action_size
+        self.learning_rate = learning_rate
+        self.discount_factor = discount_factor
+        self.exploration_rate = exploration_rate
+        self.min_exploration = min_exploration
+        self.decay_rate = decay_rate
+        
+        # Initialize Q-table with zeros
+        self.q_table = np.zeros((state_size, action_size))
+    
+    def select_action(self, state):
+        """Select action using epsilon-greedy policy"""
+        if random.uniform(0, 1) < self.exploration_rate:
+            return random.choice(range(self.action_size))  # Explore
+        return np.argmax(self.q_table[state])  # Exploit
+    
+    def update_q_table(self, state, action, reward, next_state, done):
+        """Update Q-table using the Bellman equation"""
+        best_next_action = np.argmax(self.q_table[next_state])
+        target = reward + (self.discount_factor * self.q_table[next_state, best_next_action] * (not done))
+        self.q_table[state, action] += self.learning_rate * (target - self.q_table[state, action])
+    
+    def decay_exploration(self):
+        """Reduce exploration rate over time"""
+        self.exploration_rate = max(self.min_exploration, self.exploration_rate * self.decay_rate)
+    
+    def save_q_table(self, filename="q_table.pkl"):
+        """Save Q-table to a file"""
+        with open(filename, "wb") as f:
+            pickle.dump(self.q_table, f)
+    
+    def load_q_table(self, filename="q_table.pkl"):
+        """Load Q-table from a file"""
+        with open(filename, "rb") as f:
+            self.q_table = pickle.load(f)
+
+if __name__ == "__main__":
+    env = gym.make("PacmanEnv")
+    agent = QLearningAgent(state_size=100, action_size=4)  # Assuming a 10x10 grid
+    
+    episodes = 1000
+    for episode in range(episodes):
+        state, _ = env.reset()
+        state = np.ravel_multi_index(state[:2], (10, 10))  # Convert to single index
+        done = False
+        total_reward = 0
+        
+        while not done:
+            action = agent.select_action(state)
+            next_state, reward, done, _, _ = env.step(action)
+            next_state = np.ravel_multi_index(next_state[:2], (10, 10))
+            agent.update_q_table(state, action, reward, next_state, done)
+            state = next_state
+            total_reward += reward
+        
+        agent.decay_exploration()
+        print(f"Episode {episode+1}: Total Reward: {total_reward}")
+    
+    agent.save_q_table()

@@ -1,0 +1,26 @@
+q_learning:
+  learning_rate: 0.1
+  discount_factor: 0.99
+  exploration_rate: 1.0
+  min_exploration: 0.01
+  decay_rate: 0.995
+  episodes: 1000
+
+dqn:
+  learning_rate: 0.001
+  gamma: 0.99
+  batch_size: 64
+  memory_size: 10000
+  epsilon: 1.0
+  min_epsilon: 0.01
+  epsilon_decay: 0.995
+  episodes: 1000
+  target_update_freq: 10
+
+ppo:
+  learning_rate: 0.0003
+  gamma: 0.99
+  epsilon: 0.2
+  batch_size: 64
+  episodes: 1000
+  epochs: 10

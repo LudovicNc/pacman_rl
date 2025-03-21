@@ -4,50 +4,59 @@ import numpy as np
 import pygame
 
 class PacmanEnv(gym.Env):
-    """
-    Custom Pac-Man Environment for Reinforcement Learning using Gymnasium & Pygame
-    """
+    """Custom Pac-Man Environment for Reinforcement Learning"""
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 10}
 
-    def __init__(self, render_mode="human"):
+    def __init__(self, render_mode=None):
         super().__init__()
         
-        self.grid_size = (15, 15)  # Increased grid size for better maze layout
+        # Basic environment setup
+        self.grid_size = (15, 15)
         self.walls = self._create_walls()
         self.state = None
         self.done = False
-        self.power_pellets = set()  # New attribute for power pellets
+        self.power_pellets = set()  # Will be initialized in reset
         self.ghost_is_vulnerable = False
         self.power_pellet_timer = 0
         self.POWER_PELLET_DURATION = 50  # Duration in steps
+        self.steps_counter = 0
+        self.MAX_STEPS = 500  # Max steps per episode
+        self.last_food_steps = 0  # Track steps since last food
+        self.MAX_STEPS_WITHOUT_FOOD = 100  # Prevent endless wandering
         
-        self.action_space = spaces.Discrete(4)
-        self.observation_space = spaces.Box(low=0, high=1, shape=(15, 15, 3), dtype=np.uint8)
+        # Action and observation spaces
+        self.action_space = spaces.Discrete(4)  # Up, Down, Left, Right
+        self.observation_space = spaces.Box(low=0, high=255, shape=(15, 15, 3), dtype=np.uint8)
         
+        # Setup for visualization
         self.render_mode = render_mode
         if render_mode == "human":
             pygame.init()
             self.window_size = 600
             self.screen = pygame.display.set_mode((self.window_size, self.window_size))
             self.clock = pygame.time.Clock()
-            pygame.display.set_caption("Pac-Man RL")  # Add window title
+            pygame.display.set_caption("Pac-Man RL")
     
     def reset(self, seed=None, options=None):
-        """Reset the environment to its initial state."""
+        """Reset the environment for a new episode"""
         super().reset(seed=seed)
         
-        # Use the new initialization method
+        # Initialize game state
         self._initialize_game()
         
         # Generate initial state
         self.state = self._generate_state_representation()
         self.done = False
+        self.steps_counter = 0
+        self.last_food_steps = 0
         
         return self.state, {}
-
     
     def step(self, action):
+        """Take a step in the environment"""
         reward = 0
+        self.steps_counter += 1
+        self.last_food_steps += 1
         
         # Update power pellet timer
         if self.ghost_is_vulnerable:
@@ -58,33 +67,32 @@ class PacmanEnv(gym.Env):
         # Get current position
         pacman_x, pacman_y = self.pacman_position
         
-        # Store new position temporarily
+        # Calculate new position based on action
         new_x, new_y = pacman_x, pacman_y
         
-        # Define movement logic with wraparound
-        if action == 0 and pacman_y > 0:  # Up
-            new_y -= 1
-        elif action == 1 and pacman_y < self.grid_size[1] - 1:  # Down
-            new_y += 1
+        if action == 0:  # Up
+            new_y = (pacman_y - 1) % self.grid_size[1]
+        elif action == 1:  # Down
+            new_y = (pacman_y + 1) % self.grid_size[1]
         elif action == 2:  # Left
             new_x = (pacman_x - 1) % self.grid_size[0]
         elif action == 3:  # Right
             new_x = (pacman_x + 1) % self.grid_size[0]
-
-        # Check if new position hits a wall
+        
+        # Check if new position is valid (not a wall)
         if (new_x, new_y) not in self.walls:
             self.pacman_position = (new_x, new_y)
         else:
-            reward -= 5  # Penalty for hitting wall
-
+            reward -= 1  # Penalty for hitting wall
+        
         # Check for power pellet collection
         if self.pacman_position in self.power_pellets:
             self.power_pellets.remove(self.pacman_position)
             self.ghost_is_vulnerable = True
             self.power_pellet_timer = self.POWER_PELLET_DURATION
-            reward += 20  # Bonus for getting power pellet
+            reward += 30  # Increased bonus for getting power pellet
         
-        # Update ghost position
+        # Move ghost
         self._move_ghost()
         
         # Check for ghost collision
@@ -93,133 +101,188 @@ class PacmanEnv(gym.Env):
                 # Ghost is eaten
                 self.ghost_position = (5, 5)  # Reset ghost to center
                 reward += 100  # Large bonus for eating ghost
-                self.ghost_is_vulnerable = False  # Ghost respawns as normal
+                self.ghost_is_vulnerable = False  # Ghost respawns
             else:
                 # Pac-Man is eaten
+                reward -= 50
                 self.done = True
-                reward -= 50
-
-        # Add distance-based reward when ghost is vulnerable
-        if self.ghost_is_vulnerable:
-            ghost_x, ghost_y = self.ghost_position
-            pacman_x, pacman_y = self.pacman_position
-            distance = abs(ghost_x - pacman_x) + abs(ghost_y - pacman_y)
-            # Small reward for being close to vulnerable ghost
-            reward += max(0, (10 - distance)) 
-
-        # Recalculate state representation
-        self.state = self._generate_state_representation()
-
-        # Assign rewards
-        reward -= 1  # Small penalty for each step
+        
+        # Check for food collection
         if self.pacman_position in self.food_positions:
-            reward += 10
             self.food_positions.remove(self.pacman_position)
-
-        # Check if game is over
-        if self._check_game_end():
+            reward += 10  # Reward for eating food
+            self.last_food_steps = 0  # Reset the counter
+            
+            # Bonus for progress (percentage of food eaten)
+            progress = 1.0 - len(self.food_positions) / self.initial_food_count
+            reward += progress * 5  # Scaled bonus
+        
+        # Add a small reward for moving in the direction of food
+        # This encourages exploration and food seeking
+        if len(self.food_positions) > 0:
+            # Find the nearest food
+            nearest_food = min(self.food_positions, 
+                               key=lambda food: self._manhattan_distance(self.pacman_position, food))
+            
+            # Calculate distance before and after move
+            old_distance = self._manhattan_distance((pacman_x, pacman_y), nearest_food)
+            new_distance = self._manhattan_distance(self.pacman_position, nearest_food)
+            
+            # Reward for moving closer to food
+            if new_distance < old_distance:
+                reward += 0.5
+        
+        # Small penalty for each step to encourage efficiency
+        reward -= 0.1
+        
+        # Generate new state
+        self.state = self._generate_state_representation()
+        
+        # Check if game is won (all food collected)
+        if not self.food_positions:
+            reward += 500  # Big bonus for winning
             self.done = True
-            if not self.food_positions:  # Won
-                reward += 50
-            elif self.pacman_position == self.ghost_position:  # Lost
-                reward -= 50
-
+        
+        # Check for episode timeout or stuck behavior
+        if self.steps_counter >= self.MAX_STEPS or self.last_food_steps >= self.MAX_STEPS_WITHOUT_FOOD:
+            self.done = True
+        
         return self.state, reward, self.done, False, {}
 
+    def _manhattan_distance(self, pos1, pos2):
+        """Calculate Manhattan distance with wraparound"""
+        dx = abs(pos1[0] - pos2[0])
+        dy = abs(pos1[1] - pos2[1])
+        # Consider wraparound for shortest path
+        dx = min(dx, self.grid_size[0] - dx)
+        dy = min(dy, self.grid_size[1] - dy)
+        return dx + dy
+
     def _move_ghost(self):
-        """Simplified ghost AI with reliable house exit"""
+        """Improved ghost AI"""
         ghost_x, ghost_y = self.ghost_position
         pacman_x, pacman_y = self.pacman_position
         
-        # Define ghost house area
-        in_ghost_house = (4 <= ghost_x <= 6 and 5 <= ghost_y <= 6)  # Adjusted area
+        # Ghost house area
+        in_ghost_house = (4 <= ghost_x <= 6 and 5 <= ghost_y <= 6)
         
-        if in_ghost_house and not self.ghost_is_vulnerable:
-            # Simple upward movement until out of house
-            if ghost_y > 4:  # Move up until reaching the exit area
-                new_y = ghost_y - 1
-                if (ghost_x, new_y) not in self.walls:
-                    self.ghost_position = (ghost_x, new_y)
-            elif ghost_x != 5:  # Center horizontally if not already
-                new_x = 5
-                self.ghost_position = (new_x, ghost_y)
+        # Handle ghost in house
+        if in_ghost_house:
+            # Move up to exit
+            if ghost_y > 4 and (ghost_x, ghost_y-1) not in self.walls:
+                self.ghost_position = (ghost_x, ghost_y-1)
+                return
+            elif ghost_x != 5:
+                # Center horizontally
+                self.ghost_position = (5, ghost_y)
+                return
+        
+        # Increase randomness, especially when vulnerable
+        random_threshold = 0.4 if self.ghost_is_vulnerable else 0.2
+        if np.random.random() < random_threshold:
+            possible_moves = []
+            for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                new_x = (ghost_x + dx) % self.grid_size[0]
+                new_y = (ghost_y + dy) % self.grid_size[1]
+                if (new_x, new_y) not in self.walls:
+                    possible_moves.append((new_x, new_y))
+            
+            if possible_moves:
+                self.ghost_position = possible_moves[np.random.randint(len(possible_moves))]
+                return
+        
+        # Chase or flee based on vulnerability
+        if self.ghost_is_vulnerable:
+            # Try to move away from Pac-Man
+            move_away = True
         else:
-            # Normal ghost movement once outside
-            dx = ((pacman_x - ghost_x + self.grid_size[0]//2) % self.grid_size[0]) - self.grid_size[0]//2
-            dy = pacman_y - ghost_y
+            # Try to move toward Pac-Man
+            move_away = False
+        
+        # Determine directions to/from Pac-Man
+        dx = pacman_x - ghost_x
+        dy = pacman_y - ghost_y
+        
+        # Handle wraparound for shortest path
+        if abs(dx) > self.grid_size[0] // 2:
+            dx = -dx
+        if abs(dy) > self.grid_size[1] // 2:
+            dy = -dy
+        
+        # Reverse direction if moving away
+        if move_away:
+            dx = -dx
+            dy = -dy
+        
+        # Try to move in the preferred direction
+        if abs(dx) > abs(dy):
+            # Try horizontal movement first
+            dir_x = 1 if dx > 0 else -1
+            new_x = (ghost_x + dir_x) % self.grid_size[0]
+            if (new_x, ghost_y) not in self.walls:
+                self.ghost_position = (new_x, ghost_y)
+                return
             
-            # Reverse direction if vulnerable
-            if self.ghost_is_vulnerable:
-                dx = -dx
-                dy = -dy
+            # Then try vertical
+            dir_y = 1 if dy > 0 else -1
+            new_y = (ghost_y + dir_y) % self.grid_size[1]
+            if (ghost_x, new_y) not in self.walls:
+                self.ghost_position = (ghost_x, new_y)
+                return
+        else:
+            # Try vertical movement first
+            dir_y = 1 if dy > 0 else -1
+            new_y = (ghost_y + dir_y) % self.grid_size[1]
+            if (ghost_x, new_y) not in self.walls:
+                self.ghost_position = (ghost_x, new_y)
+                return
             
-            # Random movement with increased randomness when vulnerable
-            random_threshold = 0.4 if self.ghost_is_vulnerable else 0.2
-            if np.random.random() < random_threshold:
-                possible_moves = []
-                for move_dx, move_dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
-                    new_x = (ghost_x + move_dx) % self.grid_size[0]
-                    new_y = ghost_y + move_dy
-                    # Allow movement anywhere except walls and ghost house bottom
-                    if (0 <= new_y < self.grid_size[1] and 
-                        (new_x, new_y) not in self.walls):
-                        possible_moves.append((new_x, new_y))
-                if possible_moves:
-                    self.ghost_position = possible_moves[np.random.randint(len(possible_moves))]
-            else:
-                # Move towards/away from Pac-Man
-                if abs(dx) > abs(dy):
-                    new_x = (ghost_x + (1 if dx > 0 else -1)) % self.grid_size[0]
-                    if (new_x, ghost_y) not in self.walls:
-                        self.ghost_position = (new_x, ghost_y)
-                else:
-                    new_y = ghost_y + (1 if dy > 0 else -1)
-                    if (0 <= new_y < self.grid_size[1] and 
-                        (ghost_x, new_y) not in self.walls):
-                        self.ghost_position = (ghost_x, new_y)
+            # Then try horizontal
+            dir_x = 1 if dx > 0 else -1
+            new_x = (ghost_x + dir_x) % self.grid_size[0]
+            if (new_x, ghost_y) not in self.walls:
+                self.ghost_position = (new_x, ghost_y)
+                return
+        
+        # If all else fails, try any valid move
+        for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            new_x = (ghost_x + dx) % self.grid_size[0]
+            new_y = (ghost_y + dy) % self.grid_size[1]
+            if (new_x, new_y) not in self.walls:
+                self.ghost_position = (new_x, new_y)
+                return
 
-    def _generate_initial_state(self):
-        """Initialize the environment state with Pac-Man, food, and ghosts."""
-        state = np.zeros((10, 10, 3), dtype=np.uint8)  # Create an empty grid
-
-        # Place Pac-Man in the center
-        self.pacman_position = (5, 5)
-        state[5, 5] = [255, 255, 0]  # Yellow color for Pac-Man
-
-        # Place random food in the grid
-        for _ in range(10):  # Example: 10 food items
-            x, y = np.random.randint(0, 10, size=2)
-            state[x, y] = [255, 255, 255]  # White color for food
-
-        # Place a ghost (example, modify as needed)
-        self.ghost_position = (2, 2)
-        state[2, 2] = [255, 0, 0]  # Red color for a ghost
-
-        return state
-    
     def _generate_state_representation(self):
-        """Generate the state representation as a 10x10 grid."""
-        state = np.zeros((15, 15, 3), dtype=np.uint8)  # Empty grid
-
-        # Add Pac-Man
+        """Generate the state as a grid with RGB channels"""
+        state = np.zeros((15, 15, 3), dtype=np.uint8)
+        
+        # Add Pac-Man (yellow)
         pacman_x, pacman_y = self.pacman_position
-        state[pacman_x, pacman_y] = [255, 255, 0]  # Yellow color for Pac-Man
-
-        # Add Ghost
+        state[pacman_x, pacman_y] = [255, 255, 0]
+        
+        # Add Ghost (red normally, blue when vulnerable)
         ghost_x, ghost_y = self.ghost_position
-        state[ghost_x, ghost_y] = [255, 0, 0]  # Red color for Ghost
-
-        # Add Food
+        if self.ghost_is_vulnerable:
+            state[ghost_x, ghost_y] = [0, 0, 255]  # Blue
+        else:
+            state[ghost_x, ghost_y] = [255, 0, 0]  # Red
+        
+        # Add Food (white)
         for x, y in self.food_positions:
-            state[x, y] = [255, 255, 255]  # White color for Food
-
-        # Add Power Pellets
+            state[x, y] = [255, 255, 255]
+        
+        # Add Power Pellets (white)
         for x, y in self.power_pellets:
-            state[x, y] = [255, 255, 255]  # White color for Power Pellets
-
+            state[x, y] = [255, 255, 255]
+        
+        # Add Walls (blue)
+        for x, y in self.walls:
+            state[x, y] = [0, 0, 255]
+        
         return state
     
     def render(self):
+        """Render the current state of the environment"""
         if self.render_mode == "human":
             # Handle window close event
             for event in pygame.event.get():
@@ -227,7 +290,7 @@ class PacmanEnv(gym.Env):
                     self.close()
                     return
             
-            self.screen.fill((0, 0, 0))
+            self.screen.fill((0, 0, 0))  # Black background
             
             cell_size = self.window_size // self.grid_size[0]
             
@@ -242,14 +305,14 @@ class PacmanEnv(gym.Env):
                 center_x = (food_x + 0.5) * cell_size
                 center_y = (food_y + 0.5) * cell_size
                 pygame.draw.circle(self.screen, (255, 255, 255),
-                                 (center_x, center_y), cell_size // 6)
+                                 (int(center_x), int(center_y)), cell_size // 6)
             
             # Render Power Pellets (larger white dots)
             for pellet_x, pellet_y in self.power_pellets:
                 center_x = (pellet_x + 0.5) * cell_size
                 center_y = (pellet_y + 0.5) * cell_size
                 pygame.draw.circle(self.screen, (255, 255, 255),
-                                 (center_x, center_y), cell_size // 3)
+                                 (int(center_x), int(center_y)), cell_size // 3)
             
             # Render Ghost (blue when vulnerable, red otherwise)
             ghost_x, ghost_y = self.ghost_position
@@ -257,121 +320,109 @@ class PacmanEnv(gym.Env):
             ghost_center_y = (ghost_y + 0.5) * cell_size
             ghost_color = (0, 0, 255) if self.ghost_is_vulnerable else (255, 0, 0)
             pygame.draw.circle(self.screen, ghost_color,
-                             (ghost_center_x, ghost_center_y), cell_size // 2)
+                             (int(ghost_center_x), int(ghost_center_y)), cell_size // 2)
             
             # Render Pac-Man (yellow)
             pacman_x, pacman_y = self.pacman_position
             center_x = (pacman_x + 0.5) * cell_size
             center_y = (pacman_y + 0.5) * cell_size
             pygame.draw.circle(self.screen, (255, 255, 0),
-                             (center_x, center_y), cell_size // 2)
+                             (int(center_x), int(center_y)), cell_size // 2)
+            
+            # Show step counter and food remaining
+            font = pygame.font.SysFont(None, 24)
+            step_text = font.render(f"Steps: {self.steps_counter}/{self.MAX_STEPS}", True, (255, 255, 255))
+            food_text = font.render(f"Food: {len(self.food_positions)}/{self.initial_food_count}", True, (255, 255, 255))
+            status_text = font.render(f"Vulnerable: {'Yes' if self.ghost_is_vulnerable else 'No'}", True, (255, 255, 255))
+            progress = 100 * (1.0 - len(self.food_positions) / self.initial_food_count)
+            progress_text = font.render(f"Progress: {progress:.1f}%", True, (255, 255, 255))
+            
+            self.screen.blit(step_text, (10, 10))
+            self.screen.blit(food_text, (10, 30))
+            self.screen.blit(status_text, (10, 50))
+            self.screen.blit(progress_text, (10, 70))
             
             pygame.display.flip()
             self.clock.tick(self.metadata["render_fps"])
-            
-    def _check_game_end(self):
-        """Check if the game has ended."""
-        # Condition 1: All food is eaten (Pac-Man wins)
-        if not self.food_positions:
-            print("Pac-Man ate all the food! Game Over: Victory")
-            return True
-
-        # Condition 2: Pac-Man collides with a ghost (Pac-Man loses)
-        if self.pacman_position == self.ghost_position:
-            print("Pac-Man was caught by a ghost! Game Over: Defeat")
-            return True
-
-        return False  # Game continues
-
     
     def close(self):
-        """Clean up resources and close pygame window properly"""
+        """Clean up resources"""
         if self.render_mode == "human":
-            try:
-                pygame.display.quit()
-                pygame.quit()
-                import sys
-                sys.exit()
-            except Exception as e:
-                print(f"Error while closing: {e}")
-
+            pygame.quit()
+    
     def _create_walls(self):
-        """Create a classic Pac-Man style maze layout with ghost house"""
+        """Create a simple maze layout"""
         walls = set()
         
-        # Outer walls (excluding the tunnel positions)
-        tunnel_y = self.grid_size[1] // 2
-        
-        # Add outer walls with tunnel gaps
+        # Outer walls (with tunnel openings)
         for i in range(self.grid_size[0]):
-            if i not in [0, self.grid_size[0]-1]:  # Skip tunnel entrances
+            # Skip tunnel entrances
+            if i != 0 and i != self.grid_size[0]-1:
                 walls.add((i, 0))  # Top wall
                 walls.add((i, self.grid_size[1]-1))  # Bottom wall
+        
         for j in range(self.grid_size[1]):
-            if j != tunnel_y:  # Skip tunnel row
+            # Skip middle for tunnels
+            if j != self.grid_size[1]//2:
                 walls.add((0, j))  # Left wall
                 walls.add((self.grid_size[0]-1, j))  # Right wall
         
-        # Inner vertical walls - modified to not block tunnel access
-        vertical_walls = [
-            (2, 2, tunnel_y-1),  # Stop before tunnel
-            (4, 2, tunnel_y-1),
-            (7, 2, tunnel_y-1),
-            (2, tunnel_y+1, 8),  # Start after tunnel
-            (4, tunnel_y+1, 8),
-            (7, tunnel_y+1, 8),
-        ]
+        # Add some inner walls for a simple maze
+        # Vertical walls
+        for j in range(3, 7):
+            walls.add((3, j))  # Left vertical wall
+            walls.add((11, j))  # Right vertical wall
         
-        for x, start_y, end_y in vertical_walls:
-            for y in range(start_y, end_y):
-                walls.add((x, y))
-                mirror_x = self.grid_size[0] - 1 - x
-                walls.add((mirror_x, y))
+        for j in range(8, 12):
+            walls.add((3, j))  # Left vertical wall
+            walls.add((11, j))  # Right vertical wall
         
-        # Inner horizontal walls
-        horizontal_walls = [
-            #(2, 4, 2, 7),  # (start_x, end_x, y, length)
-            (2, 4, 8, 7),
-            (4, 7, 5, 3),
-        ]
+        # Horizontal walls
+        for i in range(4, 11):
+            walls.add((i, 3))  # Top horizontal wall
+            walls.add((i, 11))  # Bottom horizontal wall
         
-        for start_x, end_x, y, length in horizontal_walls:
-            for x in range(start_x, start_x + length):
-                walls.add((x, y))
-                mirror_y = self.grid_size[1] - 1 - y
-                walls.add((x, mirror_y))
-        
-        # Ghost house (center box) - with clear exit path
+        # Ghost house (simplified)
         ghost_house = [
-            (4, 5), (4, 6),  # Left wall (shorter)
-            (5, 6),          # Bottom wall only
-            (6, 5), (6, 6)   # Right wall (shorter)
+            (6, 6), (6, 7), (6, 8),  # Left wall
+            (7, 8),                   # Bottom wall
+            (8, 6), (8, 7), (8, 8)    # Right wall
         ]
-        for x, y in ghost_house:
-            walls.add((x, y))
+        
+        for pos in ghost_house:
+            walls.add(pos)
         
         return walls
-
+    
     def _initialize_game(self):
-        """Initialize game state with ghost slightly higher in house"""
-        self.pacman_position = (self.grid_size[0] // 2, self.grid_size[1] - 3)
-        self.ghost_position = (5, 5)  # Start ghost in middle of house
-        self.ghost_is_vulnerable = False
+        """Initialize game state"""
+        # Set initial positions
+        self.pacman_position = (self.grid_size[0] // 2, self.grid_size[1] - 2)
+        self.ghost_position = (7, 7)  # Ghost starts in the ghost house
         
-        # Initialize food positions (everywhere except walls and ghost house)
+        # Reset state
+        self.ghost_is_vulnerable = False
+        self.power_pellet_timer = 0
+        
+        # Initialize food (everywhere except walls, ghost house, and Pac-Man position)
         self.food_positions = set()
         for x in range(1, self.grid_size[0] - 1):
             for y in range(1, self.grid_size[1] - 1):
-                if (x, y) not in self.walls and (x, y) != self.pacman_position:
-                    # Skip ghost house area
-                    if not (4 <= x <= 6 and 4 <= y <= 6):
+                if (x, y) not in self.walls and (x, y) != self.pacman_position and (x, y) != self.ghost_position:
+                    # Skip ghost house interior
+                    if not (6 < x < 8 and 6 < y < 8):
                         self.food_positions.add((x, y))
         
-        # Add power pellets in corners
+        # Set power pellets in corners
         self.power_pellets = {
-            (1, 1), 
-            (1, self.grid_size[1] - 2),
-            (self.grid_size[0] - 2, 1),
-            (self.grid_size[0] - 2, self.grid_size[1] - 2)
+            (1, 1),  # Top-left
+            (1, self.grid_size[1] - 2),  # Bottom-left
+            (self.grid_size[0] - 2, 1),  # Top-right
+            (self.grid_size[0] - 2, self.grid_size[1] - 2)  # Bottom-right
         }
+        
+        # Remove food from power pellet locations
         self.food_positions -= self.power_pellets
+        
+        # Save initial food count for progress tracking
+        self.initial_food_count = len(self.food_positions)

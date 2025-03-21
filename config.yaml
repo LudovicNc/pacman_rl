@@ -1,0 +1,20 @@
+q_learning:
+  learning_rate: 0.1
+  discount_factor: 0.95
+  exploration_rate: 1.0
+  min_exploration: 0.01
+  decay_rate: 0.995
+  episodes: 500
+
+environment:
+  max_steps: 500
+  grid_size: [15, 15]
+  power_pellet_duration: 50
+
+rewards:
+  step_penalty: -0.1
+  food_reward: 10
+  power_pellet_reward: 20
+  ghost_capture_reward: 100
+  death_penalty: -50
+  win_reward: 500

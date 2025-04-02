@@ -5,43 +5,52 @@ import time
 import os
 import matplotlib.pyplot as plt
 import argparse
+import matplotlib.font_manager as fm
 
-def train_dqn(episodes=500, render_mode=None, render_delay=0.1):
+def train_dqn(episodes=750, render_mode=None, render_delay=0.1):
     """
-    Train the Pac-Man agent using DQN
+    Train the Pac-Man agent using DQN.
     
-    Args:
-        episodes: Number of episodes to train
-        render_mode: None or "human" for visualization
-        render_delay: Delay between frames when rendering
+    Tracks:
+      - Total reward per episode
+      - Episode length (steps)
+      - Win flag (1 if all food is collected, else 0)
+      - Ghost captures (env.ghost_capture_count)
+      - Power pellet pickups (computed as initial count - remaining power pellets)
+      - Food left at episode end (len(env.food_positions))
+      - Power pellets left at episode end (len(env.power_pellets))
+      - Food progress: proportion of food eaten = 1.0 - (food_left / initial_food_count)
+    
+    Every 10 episodes, the average values are printed.
     """
-    # Create directories for saving results
     os.makedirs("models", exist_ok=True)
     os.makedirs("plots", exist_ok=True)
     
     # Initialize environment and agent
     env = PacmanEnv(render_mode=render_mode)
     agent = DQNAgent(
-        state_size=11,         # Size of our feature vector
-        action_size=4,         # Up, Down, Left, Right
-        learning_rate=0.0005,  # Lower learning rate for stability
-        discount_factor=0.99,  # Higher discount factor for long-term planning
+        state_size=11,
+        action_size=4,
+        learning_rate=0.0005,
+        discount_factor=0.99,
         epsilon=1.0,
         epsilon_min=0.01,
         epsilon_decay=0.995,
-        memory_size=10000,     # Store 10,000 experiences
-        batch_size=64,         # Train on 64 samples at a time
-        target_update_freq=100 # Update target network every 100 steps
+        memory_size=10000,
+        batch_size=128,
+        target_update_freq=25
     )
     
-    # Track metrics
+    # Metrics tracking lists
     all_rewards = []
     all_steps = []
-    win_count = 0
-    win_history = []
-    ghost_captures = []
-    power_pellets = []
+    wins = []  # 1 if all food collected, else 0
+    ghost_captures = []  # Taken directly from env.ghost_capture_count
+    power_pellets_collected = []  # Computed as env.initial_power_pellet_count - len(env.power_pellets)
     losses = []
+    food_left = []   # Food pellets remaining at episode end
+    power_left = []  # Power pellets remaining at episode end
+    food_progress = []  # Proportion of food eaten: 1 - (food_left / initial_food_count)
     
     print(f"Starting DQN training for {episodes} episodes...")
     print(f"Using device: {agent.device}")
@@ -51,188 +60,205 @@ def train_dqn(episodes=500, render_mode=None, render_delay=0.1):
         done = False
         total_reward = 0
         steps = 0
-        episode_ghost_captures = 0
-        episode_power_pellets = 0
         episode_losses = []
         
         while not done:
-            # Choose action
             action = agent.choose_action(state)
-            
-            # Take step
             next_state, reward, done, _, _ = env.step(action)
             
-            # Track special rewards
-            if reward == 100:  # Ghost capture reward
-                episode_ghost_captures += 1
-            elif reward == 30:  # Power pellet reward (note it's 30 in improved env)
-                episode_power_pellets += 1
-            
-            # Store experience
             agent.remember(state, action, reward, next_state, done)
             
-            # Learn from experiences
             if len(agent.memory) >= agent.batch_size:
                 loss = agent.learn()
                 if loss is not None:
                     episode_losses.append(loss)
             
-            # Update current state
             state = next_state
             total_reward += reward
             steps += 1
             
-            # Render if requested
             if render_mode == "human":
                 env.render()
                 time.sleep(render_delay)
         
-        # Track metrics for this episode
+        # Decay epsilon at the end of the episode
+        agent.epsilon = max(agent.epsilon_min, agent.epsilon * agent.epsilon_decay)
+        
+        # Get ghost captures and power pellet pickups from the environment
+        episode_ghost_captures = env.ghost_capture_count
+        episode_power_pellets = env.initial_power_pellet_count - len(env.power_pellets)
+        
+        # Compute the proportion of food eaten in this episode.
+        progress = 1.0 - len(env.food_positions) / env.initial_food_count
+        
+        # Log metrics for this episode
         all_rewards.append(total_reward)
         all_steps.append(steps)
+        wins.append(1 if len(env.food_positions) == 0 else 0)
         ghost_captures.append(episode_ghost_captures)
-        power_pellets.append(episode_power_pellets)
-        if episode_losses:
-            losses.append(np.mean(episode_losses))
-        else:
-            losses.append(0)
+        power_pellets_collected.append(episode_power_pellets)
+        food_left.append(len(env.food_positions))
+        power_left.append(len(env.power_pellets))
+        food_progress.append(progress)
+        losses.append(np.mean(episode_losses) if episode_losses else 0)
         
-        # Check if won (all food collected)
-        won = len(env.food_positions) == 0
-        if won:
-            win_count += 1
-        win_history.append(1 if won else 0)
-        
-        # Print progress
         if (episode + 1) % 10 == 0:
             avg_reward = np.mean(all_rewards[-10:])
             avg_steps = np.mean(all_steps[-10:])
-            recent_win_rate = np.mean(win_history[-10:]) if win_history else 0
-            
+            avg_win = np.mean(wins[-10:]) * 100
+            avg_ghost = np.mean(ghost_captures[-10:])
+            avg_power = np.mean(power_pellets_collected[-10:])
+            avg_food_prog = np.mean(food_progress[-10:]) * 100
             print(f"Episode: {episode + 1}/{episodes}")
-            print(f"Average Reward (last 10): {avg_reward:.1f}")
-            print(f"Average Steps (last 10): {avg_steps:.1f}")
-            print(f"Recent Win Rate: {recent_win_rate:.1%}")
-            print(f"Epsilon: {agent.epsilon:.3f}")
-            print(f"Ghost Captures: {episode_ghost_captures}")
-            print(f"Avg Loss: {np.mean(episode_losses) if episode_losses else 0:.6f}")
+            print(f"  Avg Reward (last 10): {avg_reward:.1f}")
+            print(f"  Avg Steps (last 10): {avg_steps:.1f}")
+            print(f"  Avg Win Rate (last 10): {avg_win:.1f}%")
+            print(f"  Avg Ghost Captures (last 10): {avg_ghost:.1f}")
+            print(f"  Avg Power Pellets Eaten (last 10): {avg_power:.1f}")
+            print(f"  Avg Food Eaten % (last 10): {avg_food_prog:.1f}%")
+            print(f"  Epsilon: {agent.epsilon:.3f}")
             print("-" * 30)
         
-        # Save model periodically
         if (episode + 1) % 100 == 0 or episode == episodes - 1:
             agent.save_model(f"models/dqn_model_episode_{episode+1}.pth")
-            plot_training_results(all_rewards, all_steps, win_history, ghost_captures, power_pellets, losses, episode+1)
+            plot_training_results(all_rewards, all_steps, wins, ghost_captures, 
+                                  power_pellets_collected, losses, food_left, power_left, food_progress, episode+1)
     
-    # Save final model
     agent.save_model("models/dqn_model_final.pth")
+    plot_training_results(all_rewards, all_steps, wins, ghost_captures, 
+                          power_pellets_collected, losses, food_left, power_left, food_progress, episodes)
     
-    # Plot final results
-    plot_training_results(all_rewards, all_steps, win_history, ghost_captures, power_pellets, losses, episodes)
-    
-    print(f"\nTraining completed. Final win rate: {win_count/episodes:.1%}")
-    
+    print(f"\nTraining completed. Final win rate: {np.mean(wins):.1%}")
     env.close()
     return agent
 
-def plot_training_results(rewards, steps, wins, ghost_captures, power_pellets, losses, episodes):
-    """Plot training results and save to file"""
-    plt.figure(figsize=(15, 12))
+
+def get_font(font_name, fallback):
+    available_fonts = [f.name for f in fm.fontManager.ttflist]
+    return font_name if font_name in available_fonts else fallback
+
+
+def plot_training_results(rewards, steps, wins, ghost_captures, power_pellets_collected, 
+                          losses, food_left, power_left, food_progress, episodes):
+    """Plot training results with a retro 80's vibe and save to file"""
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    title_font_name = get_font("Pixelion", "DejaVu Sans")
+    label_font_name = get_font("Roboto Compact", "DejaVu Sans")
+
+    title_font = {'family': title_font_name, 'color': 'white', 'size': 14}
+    label_font = {'family': label_font_name, 'color': 'white', 'size': 12}
+
+    # Create a figure with black background
+    plt.figure(figsize=(15, 20), facecolor='black')
     
-    # Plot rewards
-    plt.subplot(3, 2, 1)
-    plt.plot(rewards, alpha=0.5, label='Rewards')
-    plt.plot(np.convolve(rewards, np.ones(20)/20, mode='valid'), label='20-ep Moving Avg')
-    plt.title('DQN Episode Rewards')
-    plt.xlabel('Episode')
-    plt.ylabel('Total Reward')
-    plt.legend()
+    # Helper function to style each axis
+    def style_axis():
+        ax = plt.gca()
+        ax.set_facecolor('black')
+        ax.tick_params(colors='white')
+        plt.grid(True, color='#341bca')
+        leg = plt.legend(prop={'family': 'DejaVu Sans'})
+        leg.get_frame().set_facecolor('black')
+        leg.get_frame().set_edgecolor('#341bca')
+        for text in leg.get_texts():
+            text.set_color('white')
     
-    # Plot steps
-    plt.subplot(3, 2, 2)
-    plt.plot(steps, alpha=0.5, label='Steps')
-    plt.plot(np.convolve(steps, np.ones(20)/20, mode='valid'), label='20-ep Moving Avg')
-    plt.title('DQN Episode Lengths')
-    plt.xlabel('Episode')
-    plt.ylabel('Steps')
-    plt.legend()
+    # Subplot 1: Episode Rewards
+    plt.subplot(5, 2, 1)
+    plt.plot(rewards, alpha=0.5, label='Rewards', color='white')
+    plt.plot(np.convolve(rewards, np.ones(20)/20, mode='valid'), label='20-ep Moving Avg', color='red')
+    plt.title('DQN Episode Rewards', fontdict=title_font)
+    plt.xlabel('Episode', fontdict=label_font)
+    plt.ylabel('Total Reward', fontdict=label_font)
+    style_axis()
     
-    # Plot win rate
-    plt.subplot(3, 2, 3)
+    # Subplot 2: Episode Lengths
+    plt.subplot(5, 2, 2)
+    plt.plot(steps, alpha=0.5, label='Steps', color='white')
+    plt.plot(np.convolve(steps, np.ones(20)/20, mode='valid'), label='20-ep Moving Avg', color='red')
+    plt.title('DQN Episode Lengths', fontdict=title_font)
+    plt.xlabel('Episode', fontdict=label_font)
+    plt.ylabel('Steps', fontdict=label_font)
+    style_axis()
+    
+    # Subplot 3: Win Rate (20-episode moving average)
+    plt.subplot(5, 2, 3)
     window_size = min(100, len(wins))
     if window_size > 0:
         win_rate = np.convolve(wins, np.ones(window_size)/window_size, mode='valid')
-        plt.plot(win_rate, label=f'{window_size}-ep Win Rate')
-        plt.title(f'DQN Win Rate ({window_size}-episode window)')
-        plt.xlabel('Episode')
-        plt.ylabel('Win Rate')
-        plt.ylim(0, 1)
+        plt.plot(win_rate, label=f'{window_size}-ep Win Rate', color='white')
+    plt.title(f'DQN Win Rate ({window_size}-episode window)', fontdict=title_font)
+    plt.xlabel('Episode', fontdict=label_font)
+    plt.ylabel('Win Rate', fontdict=label_font)
+    plt.ylim(0, 1)
+    style_axis()
     
-    # Plot ghost captures and power pellets
-    plt.subplot(3, 2, 4)
-    plt.plot(ghost_captures, label='Ghost Captures', alpha=0.5)
-    plt.plot(power_pellets, label='Power Pellets', alpha=0.5)
-    plt.title('DQN Ghost Captures & Power Pellets')
-    plt.xlabel('Episode')
-    plt.legend()
+    # Subplot 4: Ghost Captures & Power Pellet Pickups
+    plt.subplot(5, 2, 4)
+    plt.plot(ghost_captures, label='Ghost Captures', alpha=0.5, color='white')
+    plt.plot(power_pellets_collected, label='Power Pellet Pickups', alpha=0.5, color='red')
+    plt.title('Ghost Captures & Power Pellet Pickups', fontdict=title_font)
+    plt.xlabel('Episode', fontdict=label_font)
+    style_axis()
     
-    # Plot losses
-    plt.subplot(3, 2, 5)
-    plt.plot(losses, alpha=0.5, label='Loss')
-    plt.plot(np.convolve(losses, np.ones(20)/20, mode='valid'), label='20-ep Moving Avg')
-    plt.title('DQN Training Loss')
-    plt.xlabel('Episode')
-    plt.ylabel('Loss')
-    plt.legend()
+    # Subplot 5: Training Loss
+    plt.subplot(5, 2, 5)
+    plt.plot(losses, alpha=0.5, label='Loss', color='white')
+    plt.plot(np.convolve(losses, np.ones(20)/20, mode='valid'), label='20-ep Moving Avg', color='red')
+    plt.title('Training Loss', fontdict=title_font)
+    plt.xlabel('Episode', fontdict=label_font)
+    plt.ylabel('Loss', fontdict=label_font)
+    style_axis()
     
-    # Plot cumulative win rate
-    plt.subplot(3, 2, 6)
+    # Subplot 6: Cumulative Win Rate
+    plt.subplot(5, 2, 6)
     cumulative_wins = np.cumsum(wins)
     episodes_array = np.arange(1, len(wins) + 1)
-    plt.plot(cumulative_wins / episodes_array, label='Cumulative Win Rate')
-    plt.title('DQN Cumulative Win Rate')
-    plt.xlabel('Episode')
-    plt.ylabel('Win Rate')
+    plt.plot(cumulative_wins / episodes_array, label='Cumulative Win Rate', color='white')
+    plt.title('Cumulative Win Rate', fontdict=title_font)
+    plt.xlabel('Episode', fontdict=label_font)
+    plt.ylabel('Win Rate', fontdict=label_font)
     plt.ylim(0, 1)
+    style_axis()
+    
+    # Subplot 7: Food Pellets Left per Episode
+    plt.subplot(5, 2, 7)
+    plt.plot(food_left, alpha=0.5, label='Food Left', color='white')
+    plt.plot(np.convolve(food_left, np.ones(10)/10, mode='valid'), label='10-ep Moving Avg', color='red')
+    plt.title('Food Pellets Left per Episode', fontdict=title_font)
+    plt.xlabel('Episode', fontdict=label_font)
+    plt.ylabel('Pellets Left', fontdict=label_font)
+    style_axis()
+    
+    # Subplot 8: Power Pellets Left per Episode
+    plt.subplot(5, 2, 8)
+    plt.plot(power_left, alpha=0.5, label='Power Pellets Left', color='white')
+    plt.plot(np.convolve(power_left, np.ones(10)/10, mode='valid'), label='10-ep Moving Avg', color='red')
+    plt.title('Power Pellets Left per Episode', fontdict=title_font)
+    plt.xlabel('Episode', fontdict=label_font)
+    plt.ylabel('Pellets Left', fontdict=label_font)
+    style_axis()
+    
+    # Subplot 9: Food Eaten Proportion per Episode
+    plt.subplot(5, 2, 9)
+    plt.plot(food_progress, alpha=0.5, label='Food Eaten Proportion', color='white')
+    plt.plot(np.convolve(food_progress, np.ones(10)/10, mode='valid'), label='10-ep Moving Avg', color='red')
+    plt.title('Food Eaten Proportion per Episode', fontdict=title_font)
+    plt.xlabel('Episode', fontdict=label_font)
+    plt.ylabel('Proportion Eaten', fontdict=label_font)
+    style_axis()
+    
+    # Subplot 10: (Empty)
+    plt.subplot(5, 2, 10)
+    plt.axis('off')
     
     plt.tight_layout()
-    plt.savefig(f"plots/dqn_training_progress_{episodes}.png")
+    plt.savefig(f"plots/dqn_training_progress_{episodes}.png", facecolor='black')
     plt.close()
 
-    # Create comparison plot with Q-learning results if available
-    try:
-        # Load Q-learning results if they exist
-        q_rewards = np.load("plots/q_rewards.npy")
-        q_steps = np.load("plots/q_steps.npy")
-        
-        # Create comparison plot
-        plt.figure(figsize=(12, 6))
-        
-        # Compare rewards
-        plt.subplot(1, 2, 1)
-        plt.plot(np.convolve(q_rewards, np.ones(20)/20, mode='valid'), label='Q-Learning')
-        plt.plot(np.convolve(rewards, np.ones(20)/20, mode='valid'), label='DQN')
-        plt.title('Reward Comparison')
-        plt.xlabel('Episode')
-        plt.ylabel('Reward (20-ep Moving Avg)')
-        plt.legend()
-        
-        # Compare steps
-        plt.subplot(1, 2, 2)
-        plt.plot(np.convolve(q_steps, np.ones(20)/20, mode='valid'), label='Q-Learning')
-        plt.plot(np.convolve(steps, np.ones(20)/20, mode='valid'), label='DQN')
-        plt.title('Episode Length Comparison')
-        plt.xlabel('Episode')
-        plt.ylabel('Steps (20-ep Moving Avg)')
-        plt.legend()
-        
-        plt.tight_layout()
-        plt.savefig(f"plots/algorithm_comparison_{episodes}.png")
-        plt.close()
-    except:
-        # Save Q-learning results for future comparison
-        np.save("plots/dqn_rewards.npy", np.array(rewards))
-        np.save("plots/dqn_steps.npy", np.array(steps))
-        print("Saved DQN results for future comparisons")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train Pac-Man agent using DQN")
@@ -244,7 +270,6 @@ if __name__ == "__main__":
     # Save Q-learning results for comparison if available
     if os.path.exists("plots/training_progress_500.png"):
         try:
-            # Load Q-learning metrics from train.py
             import json
             with open("metrics/episode_500.json", "r") as f:
                 q_data = json.load(f)
@@ -255,7 +280,6 @@ if __name__ == "__main__":
             print("Could not load Q-learning results, will save DQN results only")
     
     trained_agent = train_dqn(
-        episodes=args.episodes,
         render_mode="human" if args.render else None,
         render_delay=args.delay
     )

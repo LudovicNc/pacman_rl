@@ -4,7 +4,7 @@ from environment.pacman_env import PacmanEnv
 from agents.dqn import DQNAgent
 import numpy as np
 
-def run_agent(model_path="models/dqn_model_final.pth", episodes=5, render_delay=0.1):
+def run_agent(model_path="/content/models/dqn_model_episode_750.pth", episodes=5, render_delay=0.1):
     """
     Run a trained DQN Pac-Man agent
     

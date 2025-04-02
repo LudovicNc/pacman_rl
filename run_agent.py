@@ -4,7 +4,7 @@ from environment.pacman_env import PacmanEnv
 from agents.q_learning import QLearningAgent
 import numpy as np
 
-def run_agent(model_path="models/q_table_final.pkl", episodes=5, render_delay=0.1):
+def run_agent(model_path="/content/models/q_table_final.pkl", episodes=5, render_delay=0.1):
     """
     Run a trained Pac-Man agent
     

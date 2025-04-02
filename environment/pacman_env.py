@@ -20,7 +20,7 @@ class PacmanEnv(gym.Env):
         self.power_pellet_timer = 0
         self.POWER_PELLET_DURATION = 50  # Duration in steps
         self.steps_counter = 0
-        self.MAX_STEPS = 500  # Max steps per episode
+        self.MAX_STEPS = 750  # Max steps per episode
         self.last_food_steps = 0  # Track steps since last food
         self.MAX_STEPS_WITHOUT_FOOD = 100  # Prevent endless wandering
         
@@ -38,116 +38,134 @@ class PacmanEnv(gym.Env):
             pygame.display.set_caption("Pac-Man RL")
     
     def reset(self, seed=None, options=None):
-        """Reset the environment for a new episode"""
-        super().reset(seed=seed)
-        
-        # Initialize game state
-        self._initialize_game()
-        
-        # Generate initial state
-        self.state = self._generate_state_representation()
-        self.done = False
-        self.steps_counter = 0
-        self.last_food_steps = 0
-        
-        return self.state, {}
+      """Reset the environment for a new episode"""
+      super().reset(seed=seed)
+      
+      # Initialize game state
+      self._initialize_game()
+      
+      # Generate initial state
+      self.state = self._generate_state_representation()
+      self.done = False
+      self.steps_counter = 0
+      self.last_food_steps = 0
+      self.power_active_steps = 0 
+      self.ghost_capture_count = 0
+      return self.state, {}
     
     def step(self, action):
-        """Take a step in the environment"""
-        reward = 0
-        self.steps_counter += 1
-        self.last_food_steps += 1
-        
-        # Update power pellet timer
+  
+      reward = 0
+      self.steps_counter += 1
+      self.last_food_steps += 1
+
+      # Update power pellet timer
+      if self.ghost_is_vulnerable:
+          self.power_pellet_timer -= 1
+          if self.power_pellet_timer <= 0:
+              self.ghost_is_vulnerable = False
+
+      # Track power pellet active time
+      if self.ghost_is_vulnerable:
+          self.power_active_steps += 1
+
+      # Get current position
+      pacman_x, pacman_y = self.pacman_position
+
+      # Calculate new position based on action
+      new_x, new_y = pacman_x, pacman_y
+      if action == 0:  # Up
+          new_y = (pacman_y - 1) % self.grid_size[1]
+      elif action == 1:  # Down
+          new_y = (pacman_y + 1) % self.grid_size[1]
+      elif action == 2:  # Left
+          new_x = (pacman_x - 1) % self.grid_size[0]
+      elif action == 3:  # Right
+          new_x = (pacman_x + 1) % self.grid_size[0]
+
+      # Check if new position is valid (not a wall)
+      if (new_x, new_y) not in self.walls:
+          self.pacman_position = (new_x, new_y)
+      else:
+          reward -= 1  # Penalty for hitting wall
+
+      # Check for power pellet collection
+      if self.pacman_position in self.power_pellets:
+          self.power_pellets.remove(self.pacman_position)
+          self.ghost_is_vulnerable = True
+          self.power_pellet_timer = self.POWER_PELLET_DURATION
+          reward += 50  # Increased bonus for getting power pellet
+
+      # Record ghost's old position before it moves (for ghost-chasing reward)
+      ghost_old_position = self.ghost_position
+
+      # Move ghost
+      self._move_ghost()
+
+      # Check for ghost collision
+      if self.pacman_position == self.ghost_position:
         if self.ghost_is_vulnerable:
-            self.power_pellet_timer -= 1
-            if self.power_pellet_timer <= 0:
-                self.ghost_is_vulnerable = False
-        
-        # Get current position
-        pacman_x, pacman_y = self.pacman_position
-        
-        # Calculate new position based on action
-        new_x, new_y = pacman_x, pacman_y
-        
-        if action == 0:  # Up
-            new_y = (pacman_y - 1) % self.grid_size[1]
-        elif action == 1:  # Down
-            new_y = (pacman_y + 1) % self.grid_size[1]
-        elif action == 2:  # Left
-            new_x = (pacman_x - 1) % self.grid_size[0]
-        elif action == 3:  # Right
-            new_x = (pacman_x + 1) % self.grid_size[0]
-        
-        # Check if new position is valid (not a wall)
-        if (new_x, new_y) not in self.walls:
-            self.pacman_position = (new_x, new_y)
+            # Ghost is captured by Pac-Man
+            self.ghost_capture_count += 1  # Increment ghost capture counter
+            self.ghost_position = (5, 5)  # Reset ghost to center
+            reward += 200  # Large bonus for eating ghost
+            self.ghost_is_vulnerable = False  # Ghost respawns
         else:
-            reward -= 1  # Penalty for hitting wall
-        
-        # Check for power pellet collection
-        if self.pacman_position in self.power_pellets:
-            self.power_pellets.remove(self.pacman_position)
-            self.ghost_is_vulnerable = True
-            self.power_pellet_timer = self.POWER_PELLET_DURATION
-            reward += 30  # Increased bonus for getting power pellet
-        
-        # Move ghost
-        self._move_ghost()
-        
-        # Check for ghost collision
-        if self.pacman_position == self.ghost_position:
-            if self.ghost_is_vulnerable:
-                # Ghost is eaten
-                self.ghost_position = (5, 5)  # Reset ghost to center
-                reward += 100  # Large bonus for eating ghost
-                self.ghost_is_vulnerable = False  # Ghost respawns
-            else:
-                # Pac-Man is eaten
-                reward -= 50
-                self.done = True
-        
-        # Check for food collection
-        if self.pacman_position in self.food_positions:
-            self.food_positions.remove(self.pacman_position)
-            reward += 10  # Reward for eating food
-            self.last_food_steps = 0  # Reset the counter
-            
-            # Bonus for progress (percentage of food eaten)
-            progress = 1.0 - len(self.food_positions) / self.initial_food_count
-            reward += progress * 5  # Scaled bonus
-        
-        # Add a small reward for moving in the direction of food
-        # This encourages exploration and food seeking
-        if len(self.food_positions) > 0:
-            # Find the nearest food
-            nearest_food = min(self.food_positions, 
-                               key=lambda food: self._manhattan_distance(self.pacman_position, food))
-            
-            # Calculate distance before and after move
-            old_distance = self._manhattan_distance((pacman_x, pacman_y), nearest_food)
-            new_distance = self._manhattan_distance(self.pacman_position, nearest_food)
-            
-            # Reward for moving closer to food
-            if new_distance < old_distance:
-                reward += 0.5
-        
-        # Small penalty for each step to encourage efficiency
-        reward -= 0.1
-        
-        # Generate new state
-        self.state = self._generate_state_representation()
-        
-        # Check if game is won (all food collected)
-        if not self.food_positions:
-            reward += 500  # Big bonus for winning
+            # Pac-Man is eaten
+            reward -= 500
             self.done = True
-        
-        # Check for episode timeout or stuck behavior
-        if self.steps_counter >= self.MAX_STEPS or self.last_food_steps >= self.MAX_STEPS_WITHOUT_FOOD:
-            self.done = True
-        
-        return self.state, reward, self.done, False, {}
+
+      # Check for food collection
+      if self.pacman_position in self.food_positions:
+          self.food_positions.remove(self.pacman_position)
+          reward += 10  # Reward for eating food
+          self.last_food_steps = 0  # Reset the counter
+
+          # Bonus for progress (percentage of food eaten)
+          progress = 1.0 - len(self.food_positions) / self.initial_food_count
+          reward += (np.exp(progress * 3) - 1) * 5
+
+      # Add a small reward for moving in the direction of food
+      if len(self.food_positions) > 0:
+          nearest_food = min(self.food_positions, 
+                            key=lambda food: self._manhattan_distance(self.pacman_position, food))
+          old_distance = self._manhattan_distance((pacman_x, pacman_y), nearest_food)
+          new_distance = self._manhattan_distance(self.pacman_position, nearest_food)
+          if new_distance < old_distance:
+              reward += 3
+
+      # Reward for moving closer to power pellets
+      if len(self.power_pellets) > 0:
+          nearest_pellet = min(self.power_pellets, 
+                              key=lambda pellet: self._manhattan_distance((pacman_x, pacman_y), pellet))
+          old_distance_pellet = self._manhattan_distance((pacman_x, pacman_y), nearest_pellet)
+          new_distance_pellet = self._manhattan_distance(self.pacman_position, nearest_pellet)
+          if new_distance_pellet < old_distance_pellet:
+              reward += 1
+
+      # Reward for moving closer to ghosts if power pellet timer > 5
+      if self.power_pellet_timer > 5:
+          old_distance_ghost = self._manhattan_distance((pacman_x, pacman_y), ghost_old_position)
+          new_distance_ghost = self._manhattan_distance(self.pacman_position, self.ghost_position)
+          if new_distance_ghost < old_distance_ghost:
+              reward += 1
+
+      # Small penalty for each step to encourage efficiency
+      reward -= 0.1
+
+      # Generate new state
+      self.state = self._generate_state_representation()
+
+      # Check if game is won (all food collected)
+      if not self.food_positions:
+          reward += 1000  # Big bonus for winning
+          self.done = True
+
+      # Check for episode timeout or stuck behavior
+      if self.steps_counter >= self.MAX_STEPS or self.last_food_steps >= self.MAX_STEPS_WITHOUT_FOOD:
+          self.done = True
+
+      return self.state, reward, self.done, False, {}
 
     def _manhattan_distance(self, pos1, pos2):
         """Calculate Manhattan distance with wraparound"""
@@ -395,34 +413,31 @@ class PacmanEnv(gym.Env):
         return walls
     
     def _initialize_game(self):
-        """Initialize game state"""
-        # Set initial positions
-        self.pacman_position = (self.grid_size[0] // 2, self.grid_size[1] - 2)
-        self.ghost_position = (7, 7)  # Ghost starts in the ghost house
-        
-        # Reset state
-        self.ghost_is_vulnerable = False
-        self.power_pellet_timer = 0
-        
-        # Initialize food (everywhere except walls, ghost house, and Pac-Man position)
-        self.food_positions = set()
-        for x in range(1, self.grid_size[0] - 1):
-            for y in range(1, self.grid_size[1] - 1):
-                if (x, y) not in self.walls and (x, y) != self.pacman_position and (x, y) != self.ghost_position:
-                    # Skip ghost house interior
-                    if not (6 < x < 8 and 6 < y < 8):
-                        self.food_positions.add((x, y))
-        
-        # Set power pellets in corners
-        self.power_pellets = {
-            (1, 1),  # Top-left
-            (1, self.grid_size[1] - 2),  # Bottom-left
-            (self.grid_size[0] - 2, 1),  # Top-right
-            (self.grid_size[0] - 2, self.grid_size[1] - 2)  # Bottom-right
-        }
-        
-        # Remove food from power pellet locations
-        self.food_positions -= self.power_pellets
-        
-        # Save initial food count for progress tracking
-        self.initial_food_count = len(self.food_positions)
+      """Initialize game state"""
+      # Set initial positions
+      self.pacman_position = (self.grid_size[0] // 2, self.grid_size[1] - 2)
+      self.ghost_position = (7, 7)  # Ghost starts in the ghost house
+
+      # Reset state
+      self.ghost_is_vulnerable = False
+      self.power_pellet_timer = 0
+      
+      # Initialize food (everywhere except walls, ghost house, and Pac-Man position)
+      self.food_positions = set()
+      for x in range(1, self.grid_size[0] - 1):
+          for y in range(1, self.grid_size[1] - 1):
+              if (x, y) not in self.walls and (x, y) != self.pacman_position and (x, y) != self.ghost_position:
+                  # Skip ghost house interior
+                  if not (6 < x < 8 and 6 < y < 8):
+                      self.food_positions.add((x, y))
+      
+      # Set power pellets in corners
+      self.power_pellets = {
+          (1, 1),  # Top-left
+          (1, self.grid_size[1] - 2),  # Bottom-left
+          (self.grid_size[0] - 2, 1),  # Top-right
+          (self.grid_size[0] - 2, self.grid_size[1] - 2)  # Bottom-right
+      }
+      # Save the initial power pellet count for tracking
+      self.initial_power_pellet_count = len(self.power_pellets)
+      self.initial_food_count = len(self.food_positions)

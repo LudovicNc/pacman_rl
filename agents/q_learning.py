@@ -254,9 +254,6 @@ class QLearningAgent:
         new_q = current_q + self.learning_rate * (reward + self.discount_factor * max_future_q - current_q)
         self.q_table[state_key][action] = new_q
         
-        # Decay epsilon to reduce exploration over time
-        self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
-        
     def save_q_table(self, filename="models/q_table.pkl"):
         """Save the Q-table to a file"""
         os.makedirs(os.path.dirname(filename), exist_ok=True)

@@ -251,9 +251,6 @@ class DQNAgent:
         if self.step_counter % self.target_update_freq == 0:
             self.target_network.load_state_dict(self.q_network.state_dict())
         
-        # Decay epsilon
-        self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
-        
         return loss.item()
     
     def save_model(self, path="models/dqn_model.pth"):
